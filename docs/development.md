@@ -12,6 +12,9 @@
 集成测试使用真实 PostgreSQL 和 MinIO，测试替身只用于隔离的单元测试。测试数据均在 `demo_data`，
 不包含真实案件信息。
 
+Windows 本地测试使用 Selector event loop，因为 Psycopg 异步连接不支持 Windows 默认的 Proactor
+event loop；Linux 和 Docker 使用平台默认事件循环。
+
 ## 安全与日志
 
 上传同时校验扩展名、声明 MIME、大小、空文件和清洗后的文件名；声明 MIME 不是唯一信任来源，未来可
@@ -19,5 +22,5 @@
 
 ## 下一阶段边界
 
-下一阶段可在 `app/graph` 增加最小 StateGraph、PostgreSQL checkpointer、interrupt/resume，直接调用
-现有 Service。先验证一条可运行、可暂停、可重启恢复的链路，再决定 Agent 数量，不直接照搬 23 角色。
+当前已经验证最小 StateGraph、PostgreSQL checkpointer 和 interrupt/resume。下一阶段应先接入一个
+真实但低风险的研判节点和相应评测，再决定 Agent 拆分数量，不直接照搬 23 角色。

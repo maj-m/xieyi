@@ -1,13 +1,13 @@
 # 鲸鲨 MAS
 
-鲸鲨 MAS 是面向海关缉私案件研判的多智能体系统。本仓库当前仅实现第一阶段后端数据底座：
-案件、证据、MinIO 对象存储、SHA-256 固化、追加式审计链和 REST API。真实 LLM、Agent、
-LangGraph、MCP、LangSmith、OCR 与业务研判均不在本阶段范围内。
+鲸鲨 MAS 是面向海关缉私案件研判的多智能体系统。当前已实现后端数据底座，以及第二阶段的
+最小 LangGraph 研判链路：案件准备、人工复核暂停、恢复和完成。真实 LLM、业务 Agent、MCP、
+LangSmith、OCR 与业务研判算法仍不在当前范围内。
 
 ## 技术栈
 
 Python 3.12+、FastAPI、Pydantic v2、SQLAlchemy 2 Async、asyncpg、PostgreSQL 16、
-Alembic、MinIO、pytest、ruff、mypy 和 Docker Compose。
+Alembic、MinIO、LangGraph、PostgreSQL Checkpointer、pytest、ruff、mypy 和 Docker Compose。
 
 ## 目录
 
@@ -15,6 +15,7 @@ Alembic、MinIO、pytest、ruff、mypy 和 Docker Compose。
 - `backend/app/services`：业务与跨存储一致性逻辑
 - `backend/app/repositories`：异步数据库访问
 - `backend/app/storage`：对象存储抽象和 MinIO 实现
+- `backend/app/graph`：最小 `CaseState`、StateGraph 和 interrupt 节点
 - `backend/alembic`：正式数据库迁移
 - `backend/tests`：单元、API、Repository、集成测试
 - `docs`：架构、数据库、开发和进度文档
@@ -71,3 +72,22 @@ curl http://localhost:8000/api/v1/cases/{case_id}/audit/verify
 
 同一案件再次上传相同 SHA-256 文件返回 `409 DUPLICATE_EVIDENCE`。错误统一返回
 `error.code/message/request_id`，响应头同时包含 `X-Request-ID`。
+
+## 最小研判链路
+
+启动流程后会在人工复核节点暂停：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/cases/{case_id}/workflows \
+  -H "Content-Type: application/json" \
+  -d '{"analysis_scope":"minimal_case_review"}'
+
+curl http://localhost:8000/api/v1/workflows/{thread_id}
+
+curl -X POST http://localhost:8000/api/v1/workflows/{thread_id}/resume \
+  -H "Content-Type: application/json" \
+  -d '{"approved":true,"comment":"同意继续"}'
+```
+
+`thread_id` 必须稳定保存。Checkpoint 表由官方 PostgreSQL checkpointer 的 `setup()` 管理，
+Backend 每次启动都会安全地检查其内部 migration。

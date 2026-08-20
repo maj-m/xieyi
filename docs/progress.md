@@ -12,3 +12,7 @@
 | 代码质量 | Complete | `backend/app/` | Pass | ruff check/format、mypy strict 全通过 |
 | Docker 依赖验收 | Complete | `docker-compose.yml` | Pass | PostgreSQL、MinIO healthy，init exit 0 |
 | Backend 镜像与全 Compose 验收 | Complete | `backend/Dockerfile` | Pass | 镜像构建成功；Backend/PostgreSQL/MinIO healthy；重启后数据可查询 |
+| 最小 StateGraph | Complete | `backend/app/graph/` | Pass | prepare → human review → finalize |
+| PostgreSQL checkpoint | Complete | `langgraph-checkpoint-postgres` | Pass | 官方 setup 管理 checkpoint 内部表 |
+| interrupt / resume API | Complete | `backend/app/api/v1/workflows.py` | Pass | 真实 PostgreSQL 集成测试通过 |
+| 服务重启后 resume | Complete | Docker Compose | Pass | 重启前 WAITING_REVIEW，原 thread_id 重启后恢复并完成 |

@@ -1,20 +1,35 @@
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.api.v1.router import router as v1_router
 from app.config import get_settings
 from app.errors import DomainError
+from app.graph.workflow import build_case_workflow
 from app.logging_config import configure_logging
 
 configure_logging()
 settings = get_settings()
 logger = structlog.get_logger(__name__)
-app = FastAPI(title=settings.app_name, debug=settings.app_debug)
+
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.resolved_checkpoint_database_url
+    ) as checkpointer:
+        await checkpointer.setup()
+        app_instance.state.case_workflow = build_case_workflow(checkpointer)
+        yield
+
+
+app = FastAPI(title=settings.app_name, debug=settings.app_debug, lifespan=lifespan)
 app.include_router(v1_router, prefix=settings.api_v1_prefix)
 
 

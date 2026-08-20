@@ -60,6 +60,8 @@ services:
       APP_ENV: development
       APP_DEBUG: "false"
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-whale}:${POSTGRES_PASSWORD:-whale-dev-password}@postgres:5432/${POSTGRES_DB:-whale_mas}
+      CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-whale}:${POSTGRES_PASSWORD:-whale-dev-password}@postgres:5432/${POSTGRES_DB:-whale_mas}
+      LANGGRAPH_STRICT_MSGPACK: "true"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-whale-minio}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-whale-minio-password}

@@ -1,0 +1,99 @@
+import uuid
+from typing import cast
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command, StateSnapshot
+
+from app.errors import ConflictError, NotFoundError
+from app.graph.state import CaseState
+from app.graph.workflow import CaseWorkflowGraph
+from app.repositories.case_repository import CaseRepository
+from app.repositories.evidence_repository import EvidenceRepository
+from app.schemas.workflow import (
+    WorkflowResponse,
+    WorkflowResume,
+    WorkflowStart,
+    WorkflowStateResponse,
+)
+
+
+class WorkflowService:
+    def __init__(
+        self,
+        case_repository: CaseRepository,
+        evidence_repository: EvidenceRepository,
+        graph: CaseWorkflowGraph,
+    ) -> None:
+        self.case_repository = case_repository
+        self.evidence_repository = evidence_repository
+        self.graph = graph
+
+    @staticmethod
+    def _config(thread_id: uuid.UUID) -> RunnableConfig:
+        return {"configurable": {"thread_id": str(thread_id)}}
+
+    async def start(self, case_id: uuid.UUID, data: WorkflowStart) -> WorkflowResponse:
+        case = await self.case_repository.get(case_id)
+        if case is None:
+            raise NotFoundError("CASE_NOT_FOUND", "Case not found")
+        evidence = await self.evidence_repository.list(case_id)
+        thread_id = uuid.uuid4()
+        initial_state: CaseState = {
+            "case_id": str(case.id),
+            "case_name": case.name,
+            "evidence_count": len(evidence),
+            "analysis_scope": data.analysis_scope,
+            "status": "PREPARING",
+            "summary": "",
+            "review_approved": None,
+            "review_comment": None,
+            "result": None,
+        }
+        config = self._config(thread_id)
+        await self.graph.ainvoke(initial_state, config=config, durability="sync")
+        return self._to_response(thread_id, await self.graph.aget_state(config))
+
+    async def get(self, thread_id: uuid.UUID) -> WorkflowResponse:
+        snapshot = await self.graph.aget_state(self._config(thread_id))
+        if not snapshot.values:
+            raise NotFoundError("WORKFLOW_NOT_FOUND", "Workflow thread not found")
+        return self._to_response(thread_id, snapshot)
+
+    async def resume(self, thread_id: uuid.UUID, data: WorkflowResume) -> WorkflowResponse:
+        config = self._config(thread_id)
+        snapshot = await self.graph.aget_state(config)
+        if not snapshot.values:
+            raise NotFoundError("WORKFLOW_NOT_FOUND", "Workflow thread not found")
+        if not snapshot.interrupts:
+            raise ConflictError("WORKFLOW_NOT_WAITING", "Workflow is not waiting for review")
+        await self.graph.ainvoke(
+            Command(resume={"approved": data.approved, "comment": data.comment}),
+            config=config,
+            durability="sync",
+        )
+        return self._to_response(thread_id, await self.graph.aget_state(config))
+
+    @staticmethod
+    def _to_response(thread_id: uuid.UUID, snapshot: StateSnapshot) -> WorkflowResponse:
+        state = cast(CaseState, snapshot.values)
+        interrupt_payload: dict[str, object] | None = None
+        if snapshot.interrupts:
+            value = snapshot.interrupts[0].value
+            if isinstance(value, dict):
+                interrupt_payload = cast(dict[str, object], value)
+        return WorkflowResponse(
+            thread_id=thread_id,
+            case_id=uuid.UUID(state["case_id"]),
+            status=state["status"],
+            next_nodes=list(snapshot.next),
+            interrupt=interrupt_payload,
+            state=WorkflowStateResponse(
+                case_name=state["case_name"],
+                evidence_count=state["evidence_count"],
+                analysis_scope=state["analysis_scope"],
+                summary=state["summary"],
+                review_approved=state["review_approved"],
+                review_comment=state["review_comment"],
+                result=state["result"],
+            ),
+        )

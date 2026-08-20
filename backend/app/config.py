@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     app_debug: bool = False
     api_v1_prefix: str = "/api/v1"
     database_url: str
+    checkpoint_database_url: str | None = None
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = Field(repr=False)
     minio_secret_key: str = Field(repr=False)
@@ -32,6 +33,11 @@ class Settings(BaseSettings):
         ".png",
     )
     audit_hash_chain_enabled: bool = True
+
+    @property
+    def resolved_checkpoint_database_url(self) -> str:
+        url = self.checkpoint_database_url or self.database_url
+        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
     @field_validator("allowed_file_extensions", mode="before")
     @classmethod
