@@ -1,9 +1,9 @@
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.graph.state import WorkflowStatus
+from app.graph.state import ReviewAction, ReviewRecord, WorkflowStatus
 
 
 class WorkflowStart(BaseModel):
@@ -11,8 +11,22 @@ class WorkflowStart(BaseModel):
 
 
 class WorkflowResume(BaseModel):
-    approved: bool
+    decision: ReviewAction | None = None
+    approved: bool | None = None
     comment: str | None = Field(default=None, max_length=1000)
+    reviewer: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "WorkflowResume":
+        if self.decision is None and self.approved is None:
+            raise ValueError("Either decision or approved must be provided")
+        return self
+
+    @property
+    def resolved_decision(self) -> ReviewAction:
+        if self.decision is not None:
+            return self.decision
+        return "APPROVE" if self.approved else "CANCEL"
 
 
 class WorkflowStateResponse(BaseModel):
@@ -21,7 +35,13 @@ class WorkflowStateResponse(BaseModel):
     analysis_scope: str
     summary: str
     review_approved: bool | None
+    review_decision: ReviewAction | None
     review_comment: str | None
+    reviewer: str | None
+    reviewed_at: str | None
+    review_round: int
+    max_review_rounds: int
+    review_history: list[ReviewRecord]
     result: str | None
 
 

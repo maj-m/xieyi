@@ -1,4 +1,26 @@
-export type WorkflowStatus = 'PREPARING' | 'WAITING_REVIEW' | 'COMPLETED' | 'REJECTED'
+export type WorkflowStatus =
+  | 'PREPARING'
+  | 'REANALYZING'
+  | 'WAITING_REVIEW'
+  | 'WAITING_EVIDENCE'
+  | 'COMPLETED'
+  | 'REJECTED'
+  | 'CANCELLED'
+
+export type ReviewAction =
+  | 'APPROVE'
+  | 'REANALYZE'
+  | 'REQUEST_EVIDENCE'
+  | 'CANCEL'
+  | 'EVIDENCE_READY'
+
+export interface ReviewRecord {
+  action: ReviewAction
+  comment: string | null
+  reviewer: string | null
+  reviewed_at: string
+  round: number
+}
 
 export interface CaseItem {
   id: string
@@ -17,7 +39,13 @@ export interface WorkflowState {
   analysis_scope: string
   summary: string
   review_approved: boolean | null
+  review_decision: ReviewAction | null
   review_comment: string | null
+  reviewer: string | null
+  reviewed_at: string | null
+  review_round: number
+  max_review_rounds: number
+  review_history: ReviewRecord[]
   result: string | null
 }
 

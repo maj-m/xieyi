@@ -10,7 +10,10 @@ const props = defineProps<{
 }>()
 
 const terminal = computed(
-  () => props.workflow?.status === 'COMPLETED' || props.workflow?.status === 'REJECTED',
+  () =>
+    props.workflow?.status === 'COMPLETED' ||
+    props.workflow?.status === 'REJECTED' ||
+    props.workflow?.status === 'CANCELLED',
 )
 
 const statusLabel: Record<StepStatus, string> = {
@@ -56,12 +59,12 @@ const graphSteps = computed(() => {
       status: (!status ? 'pending' : status === 'WAITING_REVIEW' ? 'waiting' : terminal.value ? 'complete' : 'pending') as StepStatus,
     },
     {
-      no: '08', title: '携带决定恢复', tech: 'Command(resume)', detail: '批准或退回',
-      status: (terminal.value ? 'complete' : 'pending') as StepStatus,
+      no: '08', title: '多分支决策路由', tech: 'conditional_edges', detail: '批准 / 重研 / 补证 / 终止',
+      status: (terminal.value ? 'complete' : status === 'WAITING_EVIDENCE' ? 'waiting' : 'pending') as StepStatus,
     },
     {
-      no: '09', title: '完成并持久化', tech: 'finalize_case', detail: 'COMPLETED / REJECTED',
-      status: (!terminal.value ? 'pending' : props.workflow?.status === 'REJECTED' ? 'rejected' : 'complete') as StepStatus,
+      no: '09', title: '恢复、循环或结束', tech: 'Command(resume)', detail: '返回复核或最终持久化',
+      status: (!terminal.value ? 'pending' : props.workflow?.status === 'COMPLETED' ? 'complete' : 'rejected') as StepStatus,
     },
   ]
 })

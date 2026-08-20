@@ -9,13 +9,14 @@ import {
   workflowEventsUrl,
 } from './api'
 import WorkflowBoard from './components/WorkflowBoard.vue'
-import type { CaseItem, WorkflowSnapshot } from './types'
+import type { CaseItem, ReviewAction, WorkflowSnapshot } from './types'
 
 const cases = ref<CaseItem[]>([])
 const selectedCaseId = ref('')
 const workflow = ref<WorkflowSnapshot | null>(null)
 const scope = ref('minimal_case_review')
 const reviewComment = ref('')
+const reviewer = ref('本地复核人')
 const newCaseName = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -24,19 +25,25 @@ let eventSource: EventSource | null = null
 
 const selectedCase = computed(() => cases.value.find((item) => item.id === selectedCaseId.value))
 const waitingReview = computed(() => workflow.value?.status === 'WAITING_REVIEW')
+const waitingEvidence = computed(() => workflow.value?.status === 'WAITING_EVIDENCE')
 const statusText = computed(() => {
   const labels = {
     PREPARING: '正在准备',
+    REANALYZING: '正在重新研判',
     WAITING_REVIEW: '等待人工复核',
+    WAITING_EVIDENCE: '等待补充证据',
     COMPLETED: '研判已完成',
     REJECTED: '复核未通过',
+    CANCELLED: '流程已终止',
   }
   return workflow.value ? labels[workflow.value.status] : '尚未启动'
 })
 const progress = computed(() => {
   if (!workflow.value) return 0
   if (workflow.value.status === 'PREPARING') return 18
+  if (workflow.value.status === 'REANALYZING') return 48
   if (workflow.value.status === 'WAITING_REVIEW') return 62
+  if (workflow.value.status === 'WAITING_EVIDENCE') return 72
   return 100
 })
 
@@ -97,12 +104,19 @@ async function start() {
   }
 }
 
-async function decide(approved: boolean) {
+async function decide(decision: ReviewAction) {
   if (!workflow.value) return
+  if (decision === 'CANCEL' && !window.confirm('确认终止当前案件研判流程？')) return
   busy.value = true
   error.value = ''
   try {
-    workflow.value = await resumeWorkflow(workflow.value.thread_id, approved, reviewComment.value)
+    workflow.value = await resumeWorkflow(
+      workflow.value.thread_id,
+      decision,
+      reviewComment.value,
+      reviewer.value,
+    )
+    reviewComment.value = ''
   } catch (cause) {
     showError(cause)
   } finally {
@@ -202,16 +216,41 @@ onBeforeUnmount(() => eventSource?.close())
           <p v-if="workflow.state.result" class="result">{{ workflow.state.result }}</p>
         </article>
 
-        <article class="panel review-card" :class="{ muted: !waitingReview }">
-          <div class="section-heading compact"><div><span class="eyebrow">HUMAN IN THE LOOP</span><h2>人工复核</h2></div><span class="pause-pill">INTERRUPT</span></div>
+        <article class="panel review-card" :class="{ muted: !waitingReview && !waitingEvidence }">
+          <div class="section-heading compact"><div><span class="eyebrow">HUMAN IN THE LOOP</span><h2>人工复核 · 第 {{ workflow.state.review_round }} 轮</h2></div><span class="pause-pill">INTERRUPT</span></div>
           <template v-if="waitingReview">
             <p>{{ String(workflow.interrupt?.question ?? '请确认是否批准当前研判结果。') }}</p>
+            <label>复核人</label>
+            <input v-model="reviewer" maxlength="128" placeholder="填写复核人" />
+            <label class="review-comment-label">复核意见</label>
             <textarea v-model="reviewComment" rows="3" placeholder="填写复核意见（选填）" />
-            <div class="review-actions"><button class="reject-button" :disabled="busy" @click="decide(false)">退回</button><button class="approve-button" :disabled="busy" @click="decide(true)">批准并继续 →</button></div>
+            <div class="review-actions multi-actions">
+              <button class="approve-button" :disabled="busy" @click="decide('APPROVE')">批准归档</button>
+              <button class="reanalyze-button" :disabled="busy || workflow.state.review_round >= workflow.state.max_review_rounds" @click="decide('REANALYZE')">退回重研</button>
+              <button class="evidence-button" :disabled="busy" @click="decide('REQUEST_EVIDENCE')">补充证据</button>
+              <button class="reject-button" :disabled="busy" @click="decide('CANCEL')">终止流程</button>
+            </div>
+            <small class="round-limit">最多 {{ workflow.state.max_review_rounds }} 轮；达到上限后不能继续退回重研。</small>
+          </template>
+          <template v-else-if="waitingEvidence">
+            <p>{{ String(workflow.interrupt?.question ?? '请上传补充材料，完成后恢复流程。') }}</p>
+            <label>经办人</label>
+            <input v-model="reviewer" maxlength="128" placeholder="填写经办人" />
+            <label class="review-comment-label">材料说明</label>
+            <textarea v-model="reviewComment" rows="3" placeholder="说明本次补充的材料（选填）" />
+            <button class="approve-button evidence-ready-button" :disabled="busy" @click="decide('EVIDENCE_READY')">材料已上传，重新研判 →</button>
           </template>
           <template v-else>
             <p>{{ workflow.state.review_comment || (workflow.status === 'PREPARING' ? '流程运行到此处会自动暂停。' : '复核节点已经处理。') }}</p>
           </template>
+          <div v-if="workflow.state.review_history.length" class="review-history">
+            <strong>复核记录</strong>
+            <div v-for="(record, index) in workflow.state.review_history" :key="`${record.reviewed_at}-${index}`">
+              <span>第 {{ record.round }} 轮 · {{ record.action }}</span>
+              <small>{{ record.reviewer || '未署名' }} · {{ new Date(record.reviewed_at).toLocaleString('zh-CN') }}</small>
+              <p v-if="record.comment">{{ record.comment }}</p>
+            </div>
+          </div>
         </article>
       </section>
     </main>

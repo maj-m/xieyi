@@ -1,4 +1,4 @@
-import type { ApiErrorBody, CaseItem, WorkflowSnapshot } from './types'
+import type { ApiErrorBody, CaseItem, ReviewAction, WorkflowSnapshot } from './types'
 
 const API = '/api/v1'
 
@@ -31,10 +31,15 @@ export const startWorkflow = (caseId: string, analysisScope: string) =>
 export const getWorkflow = (threadId: string) =>
   request<WorkflowSnapshot>(`/workflows/${threadId}`)
 
-export const resumeWorkflow = (threadId: string, approved: boolean, comment: string) =>
+export const resumeWorkflow = (
+  threadId: string,
+  decision: ReviewAction,
+  comment: string,
+  reviewer: string,
+) =>
   request<WorkflowSnapshot>(`/workflows/${threadId}/resume`, {
     method: 'POST',
-    body: JSON.stringify({ approved, comment: comment || null }),
+    body: JSON.stringify({ decision, comment: comment || null, reviewer: reviewer || null }),
   })
 
 export const workflowEventsUrl = (threadId: string) =>

@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 from typing import cast
 
 from langchain_core.runnables import RunnableConfig
@@ -46,7 +47,13 @@ class WorkflowService:
             "status": "PREPARING",
             "summary": "",
             "review_approved": None,
+            "review_decision": None,
             "review_comment": None,
+            "reviewer": None,
+            "reviewed_at": None,
+            "review_round": 1,
+            "max_review_rounds": 3,
+            "review_history": [],
             "result": None,
         }
         config = self._config(thread_id)
@@ -66,8 +73,31 @@ class WorkflowService:
             raise NotFoundError("WORKFLOW_NOT_FOUND", "Workflow thread not found")
         if not snapshot.interrupts:
             raise ConflictError("WORKFLOW_NOT_WAITING", "Workflow is not waiting for review")
+        interrupt_value = snapshot.interrupts[0].value
+        interrupt_type = interrupt_value.get("type") if isinstance(interrupt_value, dict) else None
+        decision = data.resolved_decision
+        allowed = (
+            {"APPROVE", "REANALYZE", "REQUEST_EVIDENCE", "CANCEL"}
+            if interrupt_type == "CASE_ANALYSIS_REVIEW"
+            else {"EVIDENCE_READY"}
+        )
+        if decision not in allowed:
+            raise ConflictError(
+                "INVALID_WORKFLOW_DECISION",
+                f"Decision {decision} is not valid for {interrupt_type}",
+            )
+        payload: dict[str, object] = {
+            "action": decision,
+            "comment": data.comment,
+            "reviewer": data.reviewer,
+            "reviewed_at": datetime.now(UTC).isoformat(),
+        }
+        if decision == "EVIDENCE_READY":
+            state = cast(CaseState, snapshot.values)
+            evidence = await self.evidence_repository.list(uuid.UUID(state["case_id"]))
+            payload["evidence_count"] = len(evidence)
         await self.graph.ainvoke(
-            Command(resume={"approved": data.approved, "comment": data.comment}),
+            Command(resume=payload),
             config=config,
             durability="sync",
         )
@@ -93,7 +123,13 @@ class WorkflowService:
                 analysis_scope=state["analysis_scope"],
                 summary=state["summary"],
                 review_approved=state["review_approved"],
+                review_decision=state.get("review_decision"),
                 review_comment=state["review_comment"],
+                reviewer=state.get("reviewer"),
+                reviewed_at=state.get("reviewed_at"),
+                review_round=state.get("review_round", 1),
+                max_review_rounds=state.get("max_review_rounds", 3),
+                review_history=state.get("review_history", []),
                 result=state["result"],
             ),
         )
