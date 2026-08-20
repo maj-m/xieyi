@@ -6,5 +6,7 @@
 **/.mypy_cache
 **/.ruff_cache
 backend/tests
+frontend/node_modules
+frontend/dist
 demo_data
 *.docx
