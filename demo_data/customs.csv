@@ -1,0 +1,2 @@
+release_no,container_no,item_name,hs_code,declared_unit_price,quantity,total,declaration_no
+TEST-0001,TSTU1234567,Fictional Item,0000000000,10.00,10,100.00,DECL-TEST-001
