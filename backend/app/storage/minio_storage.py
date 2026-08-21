@@ -1,3 +1,5 @@
+"""MinIO 对象存储适配器：负责证据原件和标准化产物的上传、下载、检查与删除。"""
+
 import asyncio
 from pathlib import Path
 
@@ -5,6 +7,7 @@ from minio import Minio
 from minio.error import S3Error
 
 from app.errors import StorageError
+from app.storage.base import ObjectStat
 
 
 class MinIOStorage:
@@ -44,6 +47,22 @@ class MinIOStorage:
             return await asyncio.to_thread(read_object)
         except S3Error as exc:
             raise StorageError("Unable to read evidence object") from exc
+
+    async def stat(self, object_key: str) -> ObjectStat:
+        try:
+            item = await asyncio.to_thread(self.client.stat_object, self.bucket, object_key)
+            return ObjectStat(size=item.size or 0, content_type=item.content_type, etag=item.etag)
+        except S3Error as exc:
+            raise StorageError("Unable to inspect evidence object") from exc
+
+    async def download_to(self, object_key: str, destination: Path) -> ObjectStat:
+        try:
+            await asyncio.to_thread(
+                self.client.fget_object, self.bucket, object_key, str(destination)
+            )
+            return await self.stat(object_key)
+        except S3Error as exc:
+            raise StorageError("Unable to download evidence object") from exc
 
     async def delete(self, object_key: str) -> None:
         try:

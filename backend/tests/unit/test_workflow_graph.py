@@ -15,6 +15,9 @@ def initial_state() -> CaseState:
         "case_name": "最小研判测试案件",
         "evidence_count": 2,
         "analysis_scope": "case_overview",
+        "evidence_documents": [],
+        "evidence_processing": {},
+        "customs_analysis": None,
         "status": "PREPARING",
         "summary": "",
         "review_approved": None,
@@ -27,6 +30,37 @@ def initial_state() -> CaseState:
         "review_history": [],
         "result": None,
     }
+
+
+def customs_state() -> CaseState:
+    state = initial_state()
+    state["analysis_scope"] = "customs_risk_analysis"
+    state["evidence_processing"] = {
+        "ready": 2,
+        "pending": 0,
+        "failed": 0,
+        "blocked": 0,
+        "not_queued": 0,
+    }
+    state["evidence_documents"] = [
+        {
+            "evidence_id": "email-1",
+            "filename": "供应商邮件.eml",
+            "document_type": "EMAIL",
+            "title": "Final payment",
+            "text": "合同实际总价 105,000 美元，报关材料按 68,000 美元准备申报。",
+            "metadata": {},
+        },
+        {
+            "evidence_id": "payment-1",
+            "filename": "付款记录.csv",
+            "document_type": "CSV",
+            "title": "付款",
+            "text": "PAY-1\t68000\nPAY-2\t37000",
+            "metadata": {},
+        },
+    ]
+    return state
 
 
 def review_command(action: str, comment: str = "同意") -> Command[object]:
@@ -123,3 +157,32 @@ async def test_graph_can_be_cancelled() -> None:
     cancelled = await graph.aget_state(config)
     assert cancelled.values["status"] == "CANCELLED"
     assert cancelled.next == ()
+
+
+@pytest.mark.asyncio
+async def test_customs_graph_analyzes_normalized_evidence_before_review() -> None:
+    graph = build_case_workflow(InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    await graph.ainvoke(customs_state(), config=config, durability="sync")
+    interrupted = await graph.aget_state(config)
+
+    assert interrupted.next == ("human_review",)
+    assert interrupted.values["customs_analysis"]["risk_level"] == "HIGH"
+    assert interrupted.values["customs_analysis"]["difference_usd"] == 37000.0
+    assert "HIGH" in interrupted.values["summary"]
+
+
+@pytest.mark.asyncio
+async def test_customs_graph_never_uses_evidence_interrupt_before_first_review() -> None:
+    graph = build_case_workflow(InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    state = customs_state()
+    state["evidence_processing"]["pending"] = 1
+
+    await graph.ainvoke(state, config=config, durability="sync")
+    interrupted = await graph.aget_state(config)
+
+    assert interrupted.values["status"] == "WAITING_REVIEW"
+    assert interrupted.next == ("human_review",)
+    assert interrupted.interrupts[0].value["type"] == "CASE_ANALYSIS_REVIEW"

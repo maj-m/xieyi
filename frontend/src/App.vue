@@ -1,32 +1,95 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+/**
+ * 研判控制台主页面：组织案件选择、证据标准化、工作流控制、人工复核和运行事件展示。
+ */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  cancelWorkflow,
   createCase,
+  deleteEvidence,
   getWorkflow,
+  getWorkflowTimeline,
+  getNormalizedDocument,
+  enqueueEvidenceProcessing,
+  listEvidence,
+  listEvidenceProcessingJobs,
   listCases,
   resumeWorkflow,
+  retryWorkflow,
   startWorkflow,
   workflowEventsUrl,
+  uploadEvidence,
 } from './api'
 import WorkflowBoard from './components/WorkflowBoard.vue'
-import type { CaseItem, ReviewAction, WorkflowSnapshot } from './types'
+import type {
+  CaseItem,
+  EvidenceItem,
+  EvidenceProcessingJob,
+  NormalizedDocument,
+  ReviewAction,
+  WorkflowEvent,
+  WorkflowSnapshot,
+} from './types'
+
+interface CustomsAnalysis {
+  risk_level: 'HIGH' | 'MEDIUM' | 'LOW'
+  declared_amount_usd: number | null
+  actual_amount_usd: number | null
+  payment_total_usd: number | null
+  difference_usd: number | null
+  declaration_numbers: string[]
+  invoice_numbers: string[]
+  findings: string[]
+  evidence_refs: Array<{ evidence_id: string; filename: string; document_type: string }>
+  rule_version: string
+}
 
 const cases = ref<CaseItem[]>([])
 const selectedCaseId = ref('')
 const workflow = ref<WorkflowSnapshot | null>(null)
-const scope = ref('minimal_case_review')
+const scope = ref('customs_risk_analysis')
 const reviewComment = ref('')
 const reviewer = ref('本地复核人')
 const newCaseName = ref('')
 const busy = ref(false)
 const error = ref('')
 const connection = ref<'offline' | 'connecting' | 'live'>('offline')
+const workflowEvents = ref<WorkflowEvent[]>([])
+const evidenceItems = ref<EvidenceItem[]>([])
+const processingJobs = ref<EvidenceProcessingJob[]>([])
+const normalizedDocument = ref<NormalizedDocument | null>(null)
+const uploadingEvidence = ref(false)
 let eventSource: EventSource | null = null
+let evidenceTimer: number | null = null
 
 const selectedCase = computed(() => cases.value.find((item) => item.id === selectedCaseId.value))
-const waitingReview = computed(() => workflow.value?.status === 'WAITING_REVIEW')
-const waitingEvidence = computed(() => workflow.value?.status === 'WAITING_EVIDENCE')
+const customsAnalysis = computed(
+  () => workflow.value?.state.customs_analysis as CustomsAnalysis | null,
+)
+const evidenceReady = computed(
+  () =>
+    evidenceItems.value.length > 0 &&
+    evidenceItems.value.every((item) => jobFor(item.id)?.status === 'COMPLETED'),
+)
+const canStart = computed(
+  () =>
+    Boolean(selectedCaseId.value) &&
+    (scope.value !== 'customs_risk_analysis' || evidenceReady.value),
+)
+const waitingReview = computed(
+  () =>
+    workflow.value?.status === 'WAITING_REVIEW' &&
+    (!workflow.value.run || workflow.value.run.status === 'WAITING_REVIEW'),
+)
+const waitingEvidence = computed(
+  () =>
+    workflow.value?.status === 'WAITING_EVIDENCE' &&
+    (!workflow.value.run || workflow.value.run.status === 'WAITING_EVIDENCE'),
+)
 const statusText = computed(() => {
+  if (workflow.value?.run?.status === 'FAILED') return '执行失败，等待重试'
+  if (workflow.value?.run?.status === 'TIMED_OUT') return '工作流已超时'
+  if (workflow.value?.run?.status === 'CANCELLED') return '工作流已取消'
   const labels = {
     PREPARING: '正在准备',
     REANALYZING: '正在重新研判',
@@ -40,6 +103,7 @@ const statusText = computed(() => {
 })
 const progress = computed(() => {
   if (!workflow.value) return 0
+  if (['COMPLETED', 'CANCELLED', 'FAILED', 'TIMED_OUT'].includes(workflow.value.run?.status ?? '')) return 100
   if (workflow.value.status === 'PREPARING') return 18
   if (workflow.value.status === 'REANALYZING') return 48
   if (workflow.value.status === 'WAITING_REVIEW') return 62
@@ -60,6 +124,13 @@ function connectEvents(threadId: string) {
     workflow.value = JSON.parse((event as MessageEvent<string>).data) as WorkflowSnapshot
     connection.value = 'live'
   })
+  source.addEventListener('workflow_event', (event) => {
+    const item = JSON.parse((event as MessageEvent<string>).data) as WorkflowEvent
+    if (!workflowEvents.value.some((existing) => existing.sequence === item.sequence)) {
+      workflowEvents.value.push(item)
+      workflowEvents.value.sort((left, right) => left.sequence - right.sequence)
+    }
+  })
   source.onopen = () => (connection.value = 'live')
   source.onerror = () => (connection.value = 'connecting')
 }
@@ -68,6 +139,71 @@ async function refreshCases() {
   try {
     cases.value = await listCases()
     if (!selectedCaseId.value && cases.value.length) selectedCaseId.value = cases.value[0].id
+  } catch (cause) {
+    showError(cause)
+  }
+}
+
+async function refreshEvidence() {
+  if (!selectedCaseId.value) return
+  evidenceItems.value = await listEvidence(selectedCaseId.value)
+  processingJobs.value = await listEvidenceProcessingJobs(selectedCaseId.value)
+}
+
+function jobFor(evidenceId: string) {
+  return processingJobs.value.find((item) => item.evidence_id === evidenceId)
+}
+
+async function submitEvidence(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || !selectedCaseId.value) return
+  uploadingEvidence.value = true
+  error.value = ''
+  try {
+    const evidence = await uploadEvidence(selectedCaseId.value, file)
+    await enqueueEvidenceProcessing(selectedCaseId.value, evidence.id)
+    await refreshEvidence()
+  } catch (cause) {
+    showError(cause)
+  } finally {
+    uploadingEvidence.value = false
+    input.value = ''
+  }
+}
+
+async function queueEvidence(evidenceId: string) {
+  busy.value = true
+  error.value = ''
+  try {
+    await enqueueEvidenceProcessing(selectedCaseId.value, evidenceId)
+    await refreshEvidence()
+  } catch (cause) {
+    showError(cause)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function removeEvidence(item: EvidenceItem) {
+  if (!selectedCaseId.value || !window.confirm(`确认删除“${item.original_filename}”？此操作不可撤销。`)) return
+  busy.value = true
+  error.value = ''
+  try {
+    await deleteEvidence(selectedCaseId.value, item.id)
+    if (normalizedDocument.value?.evidence_id === item.id) normalizedDocument.value = null
+    await refreshEvidence()
+  } catch (cause) {
+    showError(cause)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function inspectNormalized(evidenceId: string) {
+  if (!selectedCaseId.value) return
+  try {
+    normalizedDocument.value = await getNormalizedDocument(selectedCaseId.value, evidenceId)
   } catch (cause) {
     showError(cause)
   }
@@ -94,9 +230,50 @@ async function start() {
   busy.value = true
   error.value = ''
   try {
+    await refreshEvidence()
+    workflowEvents.value = []
     workflow.value = await startWorkflow(selectedCaseId.value, scope.value)
     localStorage.setItem('whale-mas:last-thread', workflow.value.thread_id)
     connectEvents(workflow.value.thread_id)
+  } catch (cause) {
+    showError(cause)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function loadTimeline(threadId: string) {
+  try {
+    const timeline = await getWorkflowTimeline(threadId)
+    workflowEvents.value = timeline.events
+    if (workflow.value) workflow.value.run = timeline.run
+  } catch (cause) {
+    showError(cause)
+  }
+}
+
+async function retryFailedWorkflow() {
+  if (!workflow.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    workflow.value = await retryWorkflow(workflow.value.thread_id)
+    await loadTimeline(workflow.value.thread_id)
+  } catch (cause) {
+    showError(cause)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function forceCancelWorkflow() {
+  if (!workflow.value || !window.confirm('确认取消整个工作流？取消后不能继续恢复。')) return
+  busy.value = true
+  error.value = ''
+  try {
+    const timeline = await cancelWorkflow(workflow.value.thread_id, '由研判控制台取消')
+    workflow.value.run = timeline.run
+    workflowEvents.value = timeline.events
   } catch (cause) {
     showError(cause)
   } finally {
@@ -130,6 +307,7 @@ async function recoverLastWorkflow() {
   try {
     workflow.value = await getWorkflow(threadId)
     selectedCaseId.value = workflow.value.case_id
+    await loadTimeline(threadId)
     connectEvents(threadId)
   } catch {
     localStorage.removeItem('whale-mas:last-thread')
@@ -140,16 +318,52 @@ function resetBoard() {
   eventSource?.close()
   eventSource = null
   workflow.value = null
+  workflowEvents.value = []
   connection.value = 'offline'
   reviewComment.value = ''
   localStorage.removeItem('whale-mas:last-thread')
 }
 
+function eventLabel(eventType: string) {
+  const labels: Record<string, string> = {
+    WORKFLOW_STARTED: '工作流启动',
+    WORKFLOW_RESUMED: '工作流恢复',
+    NODE_STARTED: '节点开始执行',
+    NODE_COMPLETED: '节点执行完成',
+    WORKFLOW_PAUSED: '工作流暂停',
+    REVIEW_DECIDED: '人工复核决定',
+    ARTIFACT_CREATED: '分析产物生成',
+    WORKFLOW_COMPLETED: '工作流完成',
+    WORKFLOW_CANCELLED: '工作流取消',
+    WORKFLOW_FAILED: '工作流失败',
+    WORKFLOW_RETRYING: '工作流重试',
+    WORKFLOW_TIMED_OUT: '工作流超时',
+  }
+  return labels[eventType] ?? eventType
+}
+
+function usd(value: number | null) {
+  return value === null ? '未识别' : `$${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+}
+
 onMounted(async () => {
   await refreshCases()
+  await refreshEvidence()
   await recoverLastWorkflow()
+  evidenceTimer = window.setInterval(() => {
+    if (processingJobs.value.some((item) => ['QUEUED', 'PROCESSING'].includes(item.status))) {
+      void refreshEvidence()
+    }
+  }, 2000)
 })
-onBeforeUnmount(() => eventSource?.close())
+watch(selectedCaseId, () => {
+  normalizedDocument.value = null
+  void refreshEvidence()
+})
+onBeforeUnmount(() => {
+  eventSource?.close()
+  if (evidenceTimer !== null) window.clearInterval(evidenceTimer)
+})
 </script>
 
 <template>
@@ -195,14 +409,45 @@ onBeforeUnmount(() => eventSource?.close())
           <div class="section-heading compact"><div><span class="eyebrow">WORKFLOW CONTROL</span><h2>流程控制</h2></div></div>
           <label>分析范围</label>
           <input v-model="scope" :disabled="Boolean(workflow)" />
-          <button v-if="!workflow" class="primary-button" type="button" :disabled="busy || !selectedCaseId" @click="start">
+          <button v-if="!workflow" class="primary-button" type="button" :disabled="busy || !canStart" @click="start">
             <span>{{ busy ? '正在启动…' : '启动最小研判链路' }}</span><b>→</b>
           </button>
+          <small v-if="!workflow && scope === 'customs_risk_analysis' && !evidenceReady" class="evidence-gate">
+            请先确保所有证据均为 COMPLETED；未入队文件可在下方手动入队。
+          </small>
           <div v-else class="progress-block">
             <div><strong>{{ statusText }}</strong><span>{{ progress }}%</span></div>
             <div class="progress-bar"><i :style="{ width: `${progress}%` }" /></div>
             <small class="connection" :class="connection"><i /> SSE {{ connection === 'live' ? '实时连接' : '正在重连' }}</small>
           </div>
+        </div>
+      </section>
+
+      <section class="panel evidence-panel">
+        <div class="section-heading compact">
+          <div><span class="eyebrow">EVIDENCE INGESTION</span><h2>证据读取与标准化</h2></div>
+          <label class="upload-button" :class="{ disabled: !selectedCaseId || uploadingEvidence }">
+            {{ uploadingEvidence ? '正在上传…' : '上传并入队' }}
+            <input type="file" :disabled="!selectedCaseId || uploadingEvidence" @change="submitEvidence" />
+          </label>
+        </div>
+        <div v-if="evidenceItems.length" class="evidence-table">
+          <article v-for="item in evidenceItems" :key="item.id">
+            <div><strong>{{ item.original_filename }}</strong><small>{{ item.document_type }} · {{ (item.file_size / 1024).toFixed(1) }} KiB</small></div>
+            <span class="processing-status" :class="`processing-${jobFor(item.id)?.status.toLowerCase()}`">{{ jobFor(item.id)?.status ?? (item.parent_evidence_id ? 'ATTACHMENT' : 'NOT_QUEUED') }}</span>
+            <small>{{ jobFor(item.id) ? `${jobFor(item.id)?.attempt_count}/${jobFor(item.id)?.max_attempts} 次尝试` : item.sha256.slice(0, 12) }}</small>
+            <span class="evidence-actions">
+              <button v-if="jobFor(item.id)?.status === 'COMPLETED'" type="button" @click="inspectNormalized(item.id)">查看标准化结果</button>
+              <button v-else-if="!jobFor(item.id)" type="button" :disabled="busy" @click="queueEvidence(item.id)">入队解析</button>
+              <button v-if="!workflow" class="delete-evidence-button" type="button" :disabled="busy" @click="removeEvidence(item)">删除</button>
+            </span>
+          </article>
+        </div>
+        <p v-else class="empty-events">当前案件暂无证据。已支持 EML、TXT、CSV、XLS/XLSX、DOCX 和 PDF 解析。</p>
+        <div v-if="normalizedDocument" class="normalized-preview">
+          <div><strong>{{ normalizedDocument.title || '未命名文档' }}</strong><button @click="normalizedDocument = null">×</button></div>
+          <p>{{ normalizedDocument.text_preview || '该文档没有可预览正文。' }}</p>
+          <small>完整标准化 JSON：{{ normalizedDocument.content_object_key || '未生成' }}</small>
         </div>
       </section>
 
@@ -213,6 +458,24 @@ onBeforeUnmount(() => eventSource?.close())
           <div class="section-heading compact"><div><span class="eyebrow">CURRENT OUTPUT</span><h2>当前研判输出</h2></div></div>
           <dl><div><dt>案件</dt><dd>{{ workflow.state.case_name }}</dd></div><div><dt>证据数量</dt><dd>{{ workflow.state.evidence_count }} 份</dd></div><div><dt>Checkpoint</dt><dd>PostgreSQL · 已持久化</dd></div></dl>
           <p class="summary">{{ workflow.state.summary || '等待节点生成研判摘要…' }}</p>
+          <template v-if="customsAnalysis">
+            <div class="risk-heading">
+              <span>海关价格申报风险</span>
+              <strong :class="`risk-${customsAnalysis.risk_level.toLowerCase()}`">{{ customsAnalysis.risk_level }}</strong>
+              <small>{{ customsAnalysis.rule_version }}</small>
+            </div>
+            <div class="amount-grid">
+              <div><span>申报金额</span><strong>{{ usd(customsAnalysis.declared_amount_usd) }}</strong></div>
+              <div><span>实际成交/付款</span><strong>{{ usd(customsAnalysis.actual_amount_usd) }}</strong></div>
+              <div><span>申报差额</span><strong>{{ usd(customsAnalysis.difference_usd) }}</strong></div>
+            </div>
+            <div class="linked-identifiers">
+              <span>报关单：{{ customsAnalysis.declaration_numbers.join('、') || '未识别' }}</span>
+              <span>发票：{{ customsAnalysis.invoice_numbers.join('、') || '未识别' }}</span>
+              <span>关联证据：{{ customsAnalysis.evidence_refs.length }} 份</span>
+            </div>
+            <ul class="finding-list"><li v-for="finding in customsAnalysis.findings" :key="finding">{{ finding }}</li></ul>
+          </template>
           <p v-if="workflow.state.result" class="result">{{ workflow.state.result }}</p>
         </article>
 
@@ -252,6 +515,35 @@ onBeforeUnmount(() => eventSource?.close())
             </div>
           </div>
         </article>
+      </section>
+
+      <section v-if="workflow?.run" class="panel runtime-panel">
+        <div class="section-heading compact">
+          <div><span class="eyebrow">DURABLE BUSINESS RECORDS</span><h2>业务运行记录</h2></div>
+          <span class="run-status" :class="`run-${workflow.run.status.toLowerCase()}`">{{ workflow.run.status }}</span>
+        </div>
+        <div class="runtime-summary">
+          <div><span>当前节点</span><strong>{{ workflow.run.current_node || '已结束' }}</strong></div>
+          <div><span>执行尝试</span><strong>{{ workflow.run.attempt_count }} / {{ workflow.run.max_attempts }}</strong></div>
+          <div><span>业务版本</span><strong>v{{ workflow.run.version }}</strong></div>
+          <div><span>持久化</span><strong>PostgreSQL</strong></div>
+        </div>
+        <div v-if="workflow.run.last_error_message" class="runtime-error">
+          <strong>{{ workflow.run.last_error_code }}</strong><span>{{ workflow.run.last_error_message }}</span>
+        </div>
+        <div class="runtime-actions">
+          <button v-if="workflow.run.status === 'FAILED'" class="reanalyze-button" :disabled="busy" @click="retryFailedWorkflow">重试失败节点</button>
+          <button v-if="['CREATED', 'RUNNING', 'WAITING_REVIEW', 'WAITING_EVIDENCE'].includes(workflow.run.status)" class="reject-button" :disabled="busy" @click="forceCancelWorkflow">取消整个工作流</button>
+        </div>
+        <div class="event-timeline">
+          <article v-for="item in workflowEvents.slice().reverse()" :key="item.id" class="event-row">
+            <span class="event-sequence">#{{ item.sequence }}</span>
+            <i :class="`event-${item.event_type.toLowerCase()}`" />
+            <div><strong>{{ eventLabel(item.event_type) }}</strong><small>{{ item.node_name || 'workflow' }} · 第 {{ item.attempt }} 次尝试</small></div>
+            <time>{{ new Date(item.created_at).toLocaleString('zh-CN') }}</time>
+          </article>
+          <p v-if="!workflowEvents.length" class="empty-events">等待业务事件写入…</p>
+        </div>
       </section>
     </main>
   </div>

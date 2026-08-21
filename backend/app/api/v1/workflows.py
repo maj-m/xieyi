@@ -1,3 +1,5 @@
+"""研判工作流 HTTP 接口：提供启动、查询、恢复、重试、取消以及 SSE 实时事件订阅。"""
+
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
@@ -6,7 +8,15 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.dependencies import WorkflowServiceDep
-from app.schemas.workflow import WorkflowResponse, WorkflowResume, WorkflowStart
+from app.schemas.workflow import (
+    WorkflowCancel,
+    WorkflowEventResponse,
+    WorkflowResponse,
+    WorkflowResume,
+    WorkflowRetry,
+    WorkflowStart,
+    WorkflowTimelineResponse,
+)
 
 router = APIRouter(tags=["workflows"])
 
@@ -27,6 +37,13 @@ async def get_workflow(thread_id: uuid.UUID, service: WorkflowServiceDep) -> Wor
     return await service.get(thread_id)
 
 
+@router.get("/workflows/{thread_id}/timeline", response_model=WorkflowTimelineResponse)
+async def get_workflow_timeline(
+    thread_id: uuid.UUID, service: WorkflowServiceDep
+) -> WorkflowTimelineResponse:
+    return await service.timeline(thread_id)
+
+
 @router.get("/workflows/{thread_id}/events", response_class=StreamingResponse)
 async def stream_workflow_events(
     thread_id: uuid.UUID, request: Request, service: WorkflowServiceDep
@@ -37,8 +54,14 @@ async def stream_workflow_events(
     async def event_stream() -> AsyncIterator[str]:
         snapshot = initial
         previous: str | None = None
+        last_sequence = 0
         heartbeat_ticks = 0
         while not await request.is_disconnected():
+            events = await service.list_events(thread_id, after_sequence=last_sequence)
+            for item in events:
+                event_payload = WorkflowEventResponse.model_validate(item).model_dump_json()
+                yield f"id: {item.sequence}\nevent: workflow_event\ndata: {event_payload}\n\n"
+                last_sequence = item.sequence
             payload = snapshot.model_dump_json()
             if payload != previous:
                 yield f"event: workflow_snapshot\ndata: {payload}\n\n"
@@ -67,3 +90,20 @@ async def resume_workflow(
     thread_id: uuid.UUID, data: WorkflowResume, service: WorkflowServiceDep
 ) -> WorkflowResponse:
     return await service.resume(thread_id, data)
+
+
+@router.post("/workflows/{thread_id}/retry", response_model=WorkflowResponse)
+async def retry_workflow(
+    thread_id: uuid.UUID, data: WorkflowRetry, service: WorkflowServiceDep
+) -> WorkflowResponse:
+    return await service.retry(thread_id, data)
+
+
+@router.post("/workflows/{thread_id}/cancel", response_model=WorkflowTimelineResponse)
+async def cancel_workflow(
+    thread_id: uuid.UUID, data: WorkflowCancel, service: WorkflowServiceDep
+) -> WorkflowTimelineResponse:
+    return await service.cancel(thread_id, data)
+
+
+"""研判工作流 HTTP 接口：提供启动、查询、恢复、重试、取消以及 SSE 实时事件订阅。"""

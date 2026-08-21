@@ -1,3 +1,5 @@
+"""案件研判图定义：声明 LangGraph 节点、条件分支、人工中断以及最终状态流向。"""
+
 from typing import Literal, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -5,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from app.analysis.customs import analyze_customs_evidence, format_customs_summary
 from app.graph.state import (
     CaseState,
     CaseStateUpdate,
@@ -15,10 +18,57 @@ from app.graph.state import (
 CaseWorkflowGraph = CompiledStateGraph[CaseState, None, CaseState, CaseState]
 
 
+def check_evidence_ready(state: CaseState) -> CaseStateUpdate:
+    if state["analysis_scope"] != "customs_risk_analysis":
+        return {"status": "PREPARING"}
+    processing = state["evidence_processing"]
+    ready = processing.get("ready", 0)
+    blocked = sum(
+        processing.get(name, 0) for name in ("pending", "failed", "blocked", "not_queued")
+    )
+    if ready == 0 or blocked:
+        return {
+            "status": "WAITING_EVIDENCE",
+            "summary": (
+                f"海关研判等待证据标准化完成：已就绪 {ready}，"
+                f"处理中 {processing.get('pending', 0)}，"
+                f"失败/不支持 {processing.get('failed', 0) + processing.get('blocked', 0)}，"
+                f"未入队 {processing.get('not_queued', 0)}。"
+            ),
+        }
+    return {"status": "PREPARING"}
+
+
+def route_evidence_readiness(state: CaseState) -> Literal["CUSTOMS", "MINIMAL", "WAITING"]:
+    if state["analysis_scope"] != "customs_risk_analysis":
+        return "MINIMAL"
+    return "WAITING" if state["status"] == "WAITING_EVIDENCE" else "CUSTOMS"
+
+
+def route_analysis_scope(state: CaseState) -> Literal["CUSTOMS", "MINIMAL"]:
+    return "CUSTOMS" if state["analysis_scope"] == "customs_risk_analysis" else "MINIMAL"
+
+
+def load_normalized_evidence(state: CaseState) -> CaseStateUpdate:
+    return {
+        "status": "PREPARING",
+        "summary": f"已加载 {len(state['evidence_documents'])} 份标准化证据。",
+    }
+
+
+def analyze_customs_case(state: CaseState) -> CaseStateUpdate:
+    analysis = analyze_customs_evidence(state["evidence_documents"])
+    return {"customs_analysis": analysis, "summary": format_customs_summary(analysis)}
+
+
 def prepare_case(state: CaseState) -> CaseStateUpdate:
     summary = (
-        f"案件“{state['case_name']}”已完成第 {state.get('review_round', 1)} 轮最小预研判准备，"
-        f"当前纳入 {state['evidence_count']} 份证据，范围为 {state['analysis_scope']}。"
+        state["summary"]
+        if state.get("customs_analysis")
+        else (
+            f"案件“{state['case_name']}”已完成第 {state.get('review_round', 1)} 轮最小预研判准备，"
+            f"当前纳入 {state['evidence_count']} 份证据，范围为 {state['analysis_scope']}。"
+        )
     )
     return {"status": "WAITING_REVIEW", "summary": summary}
 
@@ -97,6 +147,12 @@ def await_evidence(state: CaseState) -> CaseStateUpdate:
     return {
         "status": "PREPARING",
         "evidence_count": decision["evidence_count"],
+        "evidence_documents": decision.get(
+            "evidence_documents", state.get("evidence_documents", [])
+        ),
+        "evidence_processing": decision.get(
+            "evidence_processing", state.get("evidence_processing", {})
+        ),
         "review_round": next_round,
         "review_comment": decision.get("comment"),
         "reviewer": decision.get("reviewer"),
@@ -141,6 +197,9 @@ def route_review_decision(
 
 def build_case_workflow(checkpointer: BaseCheckpointSaver[str] | None) -> CaseWorkflowGraph:
     builder = StateGraph(CaseState)
+    builder.add_node("check_evidence_ready", check_evidence_ready)
+    builder.add_node("load_normalized_evidence", load_normalized_evidence)
+    builder.add_node("analyze_customs_case", analyze_customs_case)
     builder.add_node("prepare_case", prepare_case)
     builder.add_node("human_review", request_human_review)
     builder.add_node("reanalyze_case", reanalyze_case)
@@ -148,7 +207,22 @@ def build_case_workflow(checkpointer: BaseCheckpointSaver[str] | None) -> CaseWo
     builder.add_node("await_evidence", await_evidence)
     builder.add_node("finalize_case", finalize_case)
     builder.add_node("cancel_case", cancel_case)
-    builder.add_edge(START, "prepare_case")
+    builder.add_conditional_edges(
+        START,
+        route_analysis_scope,
+        {"CUSTOMS": "load_normalized_evidence", "MINIMAL": "prepare_case"},
+    )
+    builder.add_conditional_edges(
+        "check_evidence_ready",
+        route_evidence_readiness,
+        {
+            "CUSTOMS": "load_normalized_evidence",
+            "MINIMAL": "prepare_case",
+            "WAITING": "mark_evidence_required",
+        },
+    )
+    builder.add_edge("load_normalized_evidence", "analyze_customs_case")
+    builder.add_edge("analyze_customs_case", "prepare_case")
     builder.add_edge("prepare_case", "human_review")
     builder.add_conditional_edges(
         "human_review",
@@ -160,9 +234,13 @@ def build_case_workflow(checkpointer: BaseCheckpointSaver[str] | None) -> CaseWo
             "CANCEL": "cancel_case",
         },
     )
-    builder.add_edge("reanalyze_case", "human_review")
+    builder.add_conditional_edges(
+        "reanalyze_case",
+        route_analysis_scope,
+        {"CUSTOMS": "load_normalized_evidence", "MINIMAL": "prepare_case"},
+    )
     builder.add_edge("mark_evidence_required", "await_evidence")
-    builder.add_edge("await_evidence", "prepare_case")
+    builder.add_edge("await_evidence", "check_evidence_ready")
     builder.add_edge("finalize_case", END)
     builder.add_edge("cancel_case", END)
     return builder.compile(checkpointer=checkpointer)

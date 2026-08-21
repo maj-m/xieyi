@@ -1,3 +1,5 @@
+"""原始证据服务：校验上传文件，将原件写入 MinIO，并在 PostgreSQL 建立证据及审计记录。"""
+
 import logging
 import tempfile
 import uuid

@@ -8,14 +8,18 @@ from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.errors import DomainError
 from app.graph.workflow import CaseWorkflowGraph
+from app.parsers.registry import build_parser_registry
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.case_repository import CaseRepository
+from app.repositories.evidence_processing_repository import EvidenceProcessingRepository
 from app.repositories.evidence_repository import EvidenceRepository
+from app.repositories.workflow_repository import WorkflowRepository
 from app.security.file_validation import FileValidator
 from app.services.audit_service import AuditService
+from app.services.business_workflow_service import BusinessWorkflowService
 from app.services.case_service import CaseService
+from app.services.evidence_processing_service import EvidenceProcessingService
 from app.services.evidence_service import EvidenceService
-from app.services.workflow_service import WorkflowService
 from app.storage.base import ObjectStorage
 from app.storage.minio_storage import MinIOStorage
 
@@ -72,15 +76,41 @@ def get_case_workflow(request: Request) -> CaseWorkflowGraph:
     return graph
 
 
+def get_evidence_processing_service(
+    session: SessionDep,
+    storage: Annotated[ObjectStorage, Depends(get_storage)],
+) -> EvidenceProcessingService:
+    return EvidenceProcessingService(
+        session,
+        CaseRepository(session),
+        EvidenceRepository(session),
+        EvidenceProcessingRepository(session),
+        storage,
+        build_parser_registry(),
+    )
+
+
 def get_workflow_service(
     session: SessionDep,
     graph: Annotated[CaseWorkflowGraph, Depends(get_case_workflow)],
-) -> WorkflowService:
-    return WorkflowService(CaseRepository(session), EvidenceRepository(session), graph)
+    storage: Annotated[ObjectStorage, Depends(get_storage)],
+) -> BusinessWorkflowService:
+    return BusinessWorkflowService(
+        session,
+        CaseRepository(session),
+        EvidenceRepository(session),
+        EvidenceProcessingRepository(session),
+        WorkflowRepository(session),
+        storage,
+        graph,
+    )
 
 
 AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]
 CaseServiceDep = Annotated[CaseService, Depends(get_case_service)]
 EvidenceServiceDep = Annotated[EvidenceService, Depends(get_evidence_service)]
+EvidenceProcessingServiceDep = Annotated[
+    EvidenceProcessingService, Depends(get_evidence_processing_service)
+]
 StorageDep = Annotated[ObjectStorage, Depends(get_storage)]
-WorkflowServiceDep = Annotated[WorkflowService, Depends(get_workflow_service)]
+WorkflowServiceDep = Annotated[BusinessWorkflowService, Depends(get_workflow_service)]

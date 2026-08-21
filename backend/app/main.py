@@ -1,3 +1,5 @@
+"""后端应用入口：创建 FastAPI、初始化 LangGraph Checkpointer，并统一处理请求日志和异常。"""
+
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager

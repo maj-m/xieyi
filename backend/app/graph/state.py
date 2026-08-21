@@ -1,3 +1,5 @@
+"""案件研判图状态协议：集中定义节点之间传递、Checkpoint 保存和恢复所需的数据结构。"""
+
 import operator
 from typing import Annotated, Literal, TypedDict
 
@@ -13,6 +15,15 @@ WorkflowStatus = Literal[
 ReviewAction = Literal["APPROVE", "REANALYZE", "REQUEST_EVIDENCE", "CANCEL", "EVIDENCE_READY"]
 
 
+class EvidenceDocument(TypedDict):
+    evidence_id: str
+    filename: str
+    document_type: str
+    title: str
+    text: str
+    metadata: dict[str, object]
+
+
 class ReviewRecord(TypedDict):
     action: ReviewAction
     comment: str | None
@@ -26,6 +37,9 @@ class CaseState(TypedDict):
     case_name: str
     evidence_count: int
     analysis_scope: str
+    evidence_documents: list[EvidenceDocument]
+    evidence_processing: dict[str, int]
+    customs_analysis: dict[str, object] | None
     status: WorkflowStatus
     summary: str
     review_approved: bool | None
@@ -43,6 +57,9 @@ class CaseStateUpdate(TypedDict, total=False):
     status: WorkflowStatus
     summary: str
     evidence_count: int
+    evidence_documents: list[EvidenceDocument]
+    evidence_processing: dict[str, int]
+    customs_analysis: dict[str, object]
     review_approved: bool | None
     review_decision: ReviewAction
     review_comment: str | None
@@ -62,3 +79,5 @@ class ReviewDecision(TypedDict):
 
 class EvidenceReadyDecision(ReviewDecision):
     evidence_count: int
+    evidence_documents: list[EvidenceDocument]
+    evidence_processing: dict[str, int]

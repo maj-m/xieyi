@@ -75,6 +75,26 @@ services:
       timeout: 5s
       retries: 20
 
+  evidence-worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      APP_NAME: Whale MAS Worker
+      APP_ENV: development
+      APP_DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-whale}:${POSTGRES_PASSWORD:-whale-dev-password}@postgres:5432/${POSTGRES_DB:-whale_mas}
+      CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-whale}:${POSTGRES_PASSWORD:-whale-dev-password}@postgres:5432/${POSTGRES_DB:-whale_mas}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-whale-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-whale-minio-password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-whale-mas}
+      MINIO_SECURE: "false"
+      WORKER_POLL_SECONDS: "2"
+
   frontend:
     build:
       context: ./frontend
