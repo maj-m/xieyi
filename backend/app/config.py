@@ -33,6 +33,13 @@ class Settings(BaseSettings):
         ".png",
     )
     audit_hash_chain_enabled: bool = True
+    llm_enabled: bool = False
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str | None = Field(default=None, repr=False)
+    llm_model: str = "gpt-4.1-mini"
+    llm_timeout_seconds: int = 60
+    llm_max_input_characters: int = 120_000
+    llm_fallback_to_rules: bool = True
 
     @property
     def resolved_checkpoint_database_url(self) -> str:
@@ -49,4 +56,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]  # Values are loaded from environment by BaseSettings.
+    return Settings()  # Values are loaded from environment by BaseSettings.

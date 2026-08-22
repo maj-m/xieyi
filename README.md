@@ -1,8 +1,8 @@
 # 鲸鲨 MAS
 
 鲸鲨 MAS 是面向海关缉私案件研判的多智能体系统。当前已实现后端数据底座，以及第二阶段的
-最小 LangGraph 研判链路：案件准备、人工复核暂停、恢复和完成。真实 LLM、业务 Agent、MCP、
-LangSmith、OCR 与业务研判算法仍不在当前范围内。
+最小 LangGraph 研判链路：标准化证据加载、海关研判 Agent、人工复核暂停、恢复和完成。
+MCP、LangSmith、OCR 与多 Agent 协作仍不在当前范围内。
 
 ## 技术栈
 
@@ -54,6 +54,10 @@ uv run mypy app
 完整清单见 `.env.example`。核心项为 `DATABASE_URL`、`MINIO_ENDPOINT`、
 `MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET`、`MAX_UPLOAD_SIZE_MB`、
 `ALLOWED_FILE_EXTENSIONS` 和 `AUDIT_HASH_CHAIN_ENABLED`。密钥不得写入代码或镜像。
+
+启用 OpenAI 兼容 LLM 时设置 `LLM_ENABLED=true`、`LLM_BASE_URL`、`LLM_API_KEY` 和
+`LLM_MODEL`。模型输出、模型名、提示词版本及输入证据引用会随分析产物写入 PostgreSQL；
+`LLM_FALLBACK_TO_RULES=true` 时调用失败会标记为 `RULE_FALLBACK` 并使用现有规则继续研判。
 
 ## API 示例
 

@@ -67,6 +67,13 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-whale-minio-password}
       MINIO_BUCKET: ${MINIO_BUCKET:-whale-mas}
       MINIO_SECURE: "false"
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      LLM_MAX_INPUT_CHARACTERS: ${LLM_MAX_INPUT_CHARACTERS:-120000}
+      LLM_FALLBACK_TO_RULES: ${LLM_FALLBACK_TO_RULES:-true}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     healthcheck:

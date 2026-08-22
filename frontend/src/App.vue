@@ -42,6 +42,8 @@ interface CustomsAnalysis {
   findings: string[]
   evidence_refs: Array<{ evidence_id: string; filename: string; document_type: string }>
   rule_version: string
+  analysis_method?: 'LLM' | 'RULE' | 'RULE_FALLBACK'
+  llm_trace?: { model?: string }
 }
 
 const cases = ref<CaseItem[]>([])
@@ -462,7 +464,7 @@ onBeforeUnmount(() => {
             <div class="risk-heading">
               <span>海关价格申报风险</span>
               <strong :class="`risk-${customsAnalysis.risk_level.toLowerCase()}`">{{ customsAnalysis.risk_level }}</strong>
-              <small>{{ customsAnalysis.rule_version }}</small>
+              <small>{{ customsAnalysis.analysis_method ?? 'RULE' }} · {{ customsAnalysis.llm_trace?.model ?? customsAnalysis.rule_version }}</small>
             </div>
             <div class="amount-grid">
               <div><span>申报金额</span><strong>{{ usd(customsAnalysis.declared_amount_usd) }}</strong></div>

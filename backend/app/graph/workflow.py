@@ -8,6 +8,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from app.analysis.customs import analyze_customs_evidence, format_customs_summary
+from app.analysis.llm_customs import analyze_customs_with_llm
+from app.config import get_settings
 from app.graph.state import (
     CaseState,
     CaseStateUpdate,
@@ -56,8 +58,29 @@ def load_normalized_evidence(state: CaseState) -> CaseStateUpdate:
     }
 
 
-def analyze_customs_case(state: CaseState) -> CaseStateUpdate:
-    analysis = analyze_customs_evidence(state["evidence_documents"])
+async def analyze_customs_case(state: CaseState) -> CaseStateUpdate:
+    settings = get_settings()
+    if settings.llm_enabled:
+        try:
+            analysis = await analyze_customs_with_llm(
+                state["evidence_documents"],
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                timeout_seconds=settings.llm_timeout_seconds,
+                max_input_characters=settings.llm_max_input_characters,
+            )
+        except Exception as exc:
+            if not settings.llm_fallback_to_rules:
+                raise
+            analysis = analyze_customs_evidence(state["evidence_documents"])
+            analysis.update(
+                analysis_method="RULE_FALLBACK",
+                llm_error=f"{type(exc).__name__}: {exc}"[:2000],
+            )
+    else:
+        analysis = analyze_customs_evidence(state["evidence_documents"])
+        analysis["analysis_method"] = "RULE"
     return {"customs_analysis": analysis, "summary": format_customs_summary(analysis)}
 
 
