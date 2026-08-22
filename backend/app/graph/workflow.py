@@ -7,9 +7,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from app.analysis.customs import analyze_customs_evidence, format_customs_summary
-from app.analysis.llm_customs import analyze_customs_with_llm
-from app.config import get_settings
+from app.agents.customs import (
+    associate_evidence_risk_agent,
+    extract_evidence_elements_agent,
+    summarize_conclusion_agent,
+)
 from app.graph.state import (
     CaseState,
     CaseStateUpdate,
@@ -56,32 +58,6 @@ def load_normalized_evidence(state: CaseState) -> CaseStateUpdate:
         "status": "PREPARING",
         "summary": f"已加载 {len(state['evidence_documents'])} 份标准化证据。",
     }
-
-
-async def analyze_customs_case(state: CaseState) -> CaseStateUpdate:
-    settings = get_settings()
-    if settings.llm_enabled:
-        try:
-            analysis = await analyze_customs_with_llm(
-                state["evidence_documents"],
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-                timeout_seconds=settings.llm_timeout_seconds,
-                max_input_characters=settings.llm_max_input_characters,
-            )
-        except Exception as exc:
-            if not settings.llm_fallback_to_rules:
-                raise
-            analysis = analyze_customs_evidence(state["evidence_documents"])
-            analysis.update(
-                analysis_method="RULE_FALLBACK",
-                llm_error=f"{type(exc).__name__}: {exc}"[:2000],
-            )
-    else:
-        analysis = analyze_customs_evidence(state["evidence_documents"])
-        analysis["analysis_method"] = "RULE"
-    return {"customs_analysis": analysis, "summary": format_customs_summary(analysis)}
 
 
 def prepare_case(state: CaseState) -> CaseStateUpdate:
@@ -222,7 +198,9 @@ def build_case_workflow(checkpointer: BaseCheckpointSaver[str] | None) -> CaseWo
     builder = StateGraph(CaseState)
     builder.add_node("check_evidence_ready", check_evidence_ready)
     builder.add_node("load_normalized_evidence", load_normalized_evidence)
-    builder.add_node("analyze_customs_case", analyze_customs_case)
+    builder.add_node("extract_evidence_elements_agent", extract_evidence_elements_agent)
+    builder.add_node("associate_evidence_risk_agent", associate_evidence_risk_agent)
+    builder.add_node("summarize_conclusion_agent", summarize_conclusion_agent)
     builder.add_node("prepare_case", prepare_case)
     builder.add_node("human_review", request_human_review)
     builder.add_node("reanalyze_case", reanalyze_case)
@@ -244,8 +222,10 @@ def build_case_workflow(checkpointer: BaseCheckpointSaver[str] | None) -> CaseWo
             "WAITING": "mark_evidence_required",
         },
     )
-    builder.add_edge("load_normalized_evidence", "analyze_customs_case")
-    builder.add_edge("analyze_customs_case", "prepare_case")
+    builder.add_edge("load_normalized_evidence", "extract_evidence_elements_agent")
+    builder.add_edge("extract_evidence_elements_agent", "associate_evidence_risk_agent")
+    builder.add_edge("associate_evidence_risk_agent", "summarize_conclusion_agent")
+    builder.add_edge("summarize_conclusion_agent", "prepare_case")
     builder.add_edge("prepare_case", "human_review")
     builder.add_conditional_edges(
         "human_review",

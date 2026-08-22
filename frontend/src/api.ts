@@ -8,6 +8,7 @@ import type {
   NormalizedDocument,
   ReviewAction,
   WorkflowSnapshot,
+  WorkflowRun,
   WorkflowTimeline,
 } from './types'
 
@@ -34,15 +35,20 @@ export const createCase = (name: string) =>
     body: JSON.stringify({ name, description: '由研判控制台创建' }),
   })
 
-export const startWorkflow = (caseId: string, analysisScope: string) =>
+export const startWorkflow = (caseId: string, analysisScope: string, idempotencyKey: string) =>
   request<WorkflowSnapshot>(`/cases/${caseId}/workflows`, {
     method: 'POST',
     body: JSON.stringify({
       analysis_scope: analysisScope,
-      idempotency_key: crypto.randomUUID(),
+      idempotency_key: idempotencyKey,
       max_attempts: 3,
     }),
   })
+
+export const findWorkflowRun = (caseId: string, idempotencyKey: string) =>
+  request<WorkflowRun>(
+    `/cases/${caseId}/workflows/by-idempotency/${encodeURIComponent(idempotencyKey)}`,
+  )
 
 export const getWorkflow = (threadId: string) =>
   request<WorkflowSnapshot>(`/workflows/${threadId}`)

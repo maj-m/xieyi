@@ -68,6 +68,43 @@ const graphSteps = computed(() => [
       status: (!terminal.value ? 'pending' : props.workflow?.status === 'COMPLETED' ? 'complete' : 'rejected') as StepStatus,
     },
 ])
+const visibleGraphSteps = computed(() => graphSteps.value.map((step) =>
+  step.no === '06'
+    ? { ...step, title: '三个研判 Agent 协作', tech: 'extract → associate → summarize', detail: '要素提取 → 证据关联与风险 → 结论汇总' }
+    : step,
+))
+const liveGraphSteps = computed(() => {
+  const nodes = [
+    { no: '05', node: 'load_normalized_evidence', title: '加载标准化证据', tech: 'load_normalized_evidence', detail: '从 MinIO 读取标准化 JSON 正文' },
+    { no: '06', agentLabel: 'Agent1', node: 'extract_evidence_elements_agent', title: '证据要素提取', tech: '', detail: '' },
+    { no: '07', agentLabel: 'Agent2', node: 'associate_evidence_risk_agent', title: '证据关联与风险', tech: '', detail: '' },
+    { no: '08', agentLabel: 'Agent3', node: 'summarize_conclusion_agent', title: '结论汇总', tech: '', detail: '' },
+    { no: '09', node: 'prepare_case', title: '保存第一轮研判结果', tech: 'prepare_case + checkpoint', detail: '持久化风险、差额、依据和证据引用' },
+    { no: '10', node: 'human_review', title: '人工复核与多分支', tech: 'interrupt() + conditional_edges', detail: '批准 / 重研 / 补证 / 终止' },
+    { no: '11', node: 'workflow_end', title: '恢复、循环或归档', tech: 'Command(resume)', detail: '重新研判或保存最终结论' },
+  ]
+  if (!props.workflow) return nodes.map((node) => ({ ...node, status: 'pending' as StepStatus }))
+  const rawCurrent = props.workflow.run?.current_node ?? props.workflow.next_nodes[0] ?? ''
+  const current = ['reanalyze_case', 'mark_evidence_required', 'await_evidence', 'check_evidence_ready', 'finalize_case', 'cancel_case'].includes(rawCurrent)
+    ? 'workflow_end'
+    : rawCurrent
+  const currentIndex = nodes.findIndex((node) => node.node === current)
+  const failed = props.workflow.run?.status === 'FAILED'
+  return nodes.map((node, index) => {
+    let status: StepStatus = 'pending'
+    if (props.workflow?.status === 'COMPLETED') status = 'complete'
+    else if (currentIndex >= 0 && index < currentIndex) status = 'complete'
+    else if (index === currentIndex) {
+      status = failed ? 'rejected' : waitingReview.value || waitingEvidence.value ? 'waiting' : 'active'
+    }
+    return { ...node, status }
+  })
+})
+const currentAgent = computed(() =>
+  liveGraphSteps.value.find((step) =>
+    step.status === 'active' && step.node.endsWith('_agent'),
+  ),
+)
 </script>
 
 <template>
@@ -101,11 +138,13 @@ const graphSteps = computed(() => [
     <div class="flow-lane graph-lane">
       <div class="lane-label"><b>LangGraph 研判运行时</b><span>STATE GRAPH / CHECKPOINT</span></div>
       <div class="detailed-flow graph-flow">
-        <template v-for="(step, index) in graphSteps" :key="step.no">
-          <article class="flow-step" :class="`step-${step.status}`">
-            <div class="flow-step-head"><span>{{ step.no }}</span><em><i />{{ statusLabel[step.status] }}</em></div>
-            <strong>{{ step.title }}</strong><b>{{ step.tech }}</b><small>{{ step.detail }}</small>
+        <div v-if="currentAgent" class="agent-live-indicator"><i />当前执行：{{ currentAgent.title }}</div>
+        <template v-for="(step, index) in liveGraphSteps" :key="step.no">
+          <article class="flow-step" :class="[`step-${step.status}`, { 'agent-step': step.agentLabel }]">
+            <div class="flow-step-head"><span :class="{ 'agent-label': step.agentLabel }">{{ step.agentLabel || step.no }}</span><em><i />{{ statusLabel[step.status] }}</em></div>
+            <strong>{{ step.title }}</strong><template v-if="!step.agentLabel"><b>{{ step.tech }}</b><small>{{ step.detail }}</small></template>
           </article>
+          <div v-if="index >= graphSteps.length - 1 && index < liveGraphSteps.length - 1" class="flow-arrow">→</div>
           <div v-if="index < graphSteps.length - 1" class="flow-arrow">→</div>
         </template>
       </div>

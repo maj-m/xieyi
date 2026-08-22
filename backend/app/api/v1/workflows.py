@@ -14,6 +14,7 @@ from app.schemas.workflow import (
     WorkflowResponse,
     WorkflowResume,
     WorkflowRetry,
+    WorkflowRunResponse,
     WorkflowStart,
     WorkflowTimelineResponse,
 )
@@ -35,6 +36,16 @@ async def start_workflow(
 @router.get("/workflows/{thread_id}", response_model=WorkflowResponse)
 async def get_workflow(thread_id: uuid.UUID, service: WorkflowServiceDep) -> WorkflowResponse:
     return await service.get(thread_id)
+
+
+@router.get(
+    "/cases/{case_id}/workflows/by-idempotency/{idempotency_key}",
+    response_model=WorkflowRunResponse,
+)
+async def find_workflow_run(
+    case_id: uuid.UUID, idempotency_key: str, service: WorkflowServiceDep
+) -> WorkflowRunResponse:
+    return await service.find_run_by_idempotency(case_id, idempotency_key)
 
 
 @router.get("/workflows/{thread_id}/timeline", response_model=WorkflowTimelineResponse)

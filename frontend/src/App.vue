@@ -7,6 +7,7 @@ import {
   cancelWorkflow,
   createCase,
   deleteEvidence,
+  findWorkflowRun,
   getWorkflow,
   getWorkflowTimeline,
   getNormalizedDocument,
@@ -40,6 +41,7 @@ interface CustomsAnalysis {
   declaration_numbers: string[]
   invoice_numbers: string[]
   findings: string[]
+  evidence_reasons?: Array<{ finding: string; evidence_ids: string[] }>
   evidence_refs: Array<{ evidence_id: string; filename: string; document_type: string }>
   rule_version: string
   analysis_method?: 'LLM' | 'RULE' | 'RULE_FALLBACK'
@@ -60,7 +62,11 @@ const workflowEvents = ref<WorkflowEvent[]>([])
 const evidenceItems = ref<EvidenceItem[]>([])
 const processingJobs = ref<EvidenceProcessingJob[]>([])
 const normalizedDocument = ref<NormalizedDocument | null>(null)
+const hoveredEvidenceId = ref('')
+const hoverPreview = ref<NormalizedDocument | null>(null)
+const hoverPreviewError = ref('')
 const uploadingEvidence = ref(false)
+const evidencePreviewCache = new Map<string, NormalizedDocument>()
 let eventSource: EventSource | null = null
 let evidenceTimer: number | null = null
 
@@ -156,6 +162,39 @@ function jobFor(evidenceId: string) {
   return processingJobs.value.find((item) => item.evidence_id === evidenceId)
 }
 
+function evidenceRefsForFinding(finding: string) {
+  const ids = new Set(
+    customsAnalysis.value?.evidence_reasons?.find((item) => item.finding === finding)
+      ?.evidence_ids ?? [],
+  )
+  return customsAnalysis.value?.evidence_refs.filter((item) => ids.has(item.evidence_id)) ?? []
+}
+
+async function showEvidencePreview(evidenceId: string) {
+  if (!selectedCaseId.value) return
+  hoveredEvidenceId.value = evidenceId
+  hoverPreviewError.value = ''
+  const cached = evidencePreviewCache.get(evidenceId)
+  if (cached) {
+    hoverPreview.value = cached
+    return
+  }
+  hoverPreview.value = null
+  try {
+    const document = await getNormalizedDocument(selectedCaseId.value, evidenceId)
+    evidencePreviewCache.set(evidenceId, document)
+    if (hoveredEvidenceId.value === evidenceId) hoverPreview.value = document
+  } catch {
+    if (hoveredEvidenceId.value === evidenceId) hoverPreviewError.value = '暂时无法加载文件预览'
+  }
+}
+
+function hideEvidencePreview() {
+  hoveredEvidenceId.value = ''
+  hoverPreview.value = null
+  hoverPreviewError.value = ''
+}
+
 async function submitEvidence(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -234,7 +273,24 @@ async function start() {
   try {
     await refreshEvidence()
     workflowEvents.value = []
-    workflow.value = await startWorkflow(selectedCaseId.value, scope.value)
+    const caseId = selectedCaseId.value
+    const idempotencyKey = crypto.randomUUID()
+    let settled = false
+    const startRequest = startWorkflow(caseId, scope.value, idempotencyKey).finally(() => {
+      settled = true
+    })
+    while (!settled && !workflow.value) {
+      await new Promise((resolve) => window.setTimeout(resolve, 150))
+      try {
+        const run = await findWorkflowRun(caseId, idempotencyKey)
+        workflow.value = await getWorkflow(run.thread_id)
+        localStorage.setItem('whale-mas:last-thread', run.thread_id)
+        connectEvents(run.thread_id)
+      } catch {
+        // 工作流记录或首个 checkpoint 尚未提交，继续短暂轮询。
+      }
+    }
+    workflow.value = await startRequest
     localStorage.setItem('whale-mas:last-thread', workflow.value.thread_id)
     connectEvents(workflow.value.thread_id)
   } catch (cause) {
@@ -360,6 +416,8 @@ onMounted(async () => {
 })
 watch(selectedCaseId, () => {
   normalizedDocument.value = null
+  evidencePreviewCache.clear()
+  hideEvidencePreview()
   void refreshEvidence()
 })
 onBeforeUnmount(() => {
@@ -459,11 +517,11 @@ onBeforeUnmount(() => {
         <article class="panel analysis-card">
           <div class="section-heading compact"><div><span class="eyebrow">CURRENT OUTPUT</span><h2>当前研判输出</h2></div></div>
           <dl><div><dt>案件</dt><dd>{{ workflow.state.case_name }}</dd></div><div><dt>证据数量</dt><dd>{{ workflow.state.evidence_count }} 份</dd></div><div><dt>Checkpoint</dt><dd>PostgreSQL · 已持久化</dd></div></dl>
-          <p class="summary">{{ workflow.state.summary || '等待节点生成研判摘要…' }}</p>
+          <p v-if="!customsAnalysis" class="summary">{{ workflow.state.summary || '等待节点生成研判摘要…' }}</p>
           <template v-if="customsAnalysis">
-            <div class="risk-heading">
-              <span>海关价格申报风险</span>
-              <strong :class="`risk-${customsAnalysis.risk_level.toLowerCase()}`">{{ customsAnalysis.risk_level }}</strong>
+            <div class="risk-hero" :class="`risk-${customsAnalysis.risk_level.toLowerCase()}`">
+              <div><span>海关价格申报风险</span><strong>{{ customsAnalysis.risk_level }}</strong></div>
+              <p>{{ customsAnalysis.risk_level === 'HIGH' ? '发现显著风险信号，建议优先人工复核' : customsAnalysis.risk_level === 'MEDIUM' ? '发现需要进一步核验的风险信号' : '当前材料未发现显著价格申报风险' }}</p>
               <small>{{ customsAnalysis.analysis_method ?? 'RULE' }} · {{ customsAnalysis.llm_trace?.model ?? customsAnalysis.rule_version }}</small>
             </div>
             <div class="amount-grid">
@@ -476,7 +534,58 @@ onBeforeUnmount(() => {
               <span>发票：{{ customsAnalysis.invoice_numbers.join('、') || '未识别' }}</span>
               <span>关联证据：{{ customsAnalysis.evidence_refs.length }} 份</span>
             </div>
-            <ul class="finding-list"><li v-for="finding in customsAnalysis.findings" :key="finding">{{ finding }}</li></ul>
+            <div class="analysis-conversation">
+              <article class="analysis-message conclusion-message">
+                <span class="agent-avatar">AI</span>
+                <div><small>综合研判结论</small><p>{{ workflow.state.summary }}</p></div>
+              </article>
+              <article v-for="(finding, index) in customsAnalysis.findings" :key="finding" class="analysis-message">
+                <span class="message-index">{{ String(index + 1).padStart(2, '0') }}</span>
+                <div>
+                  <small>研判依据</small>
+                  <p>{{ finding }}</p>
+                  <div v-if="evidenceRefsForFinding(finding).length" class="evidence-citations">
+                    <span
+                      v-for="reference in evidenceRefsForFinding(finding)"
+                      :key="reference.evidence_id"
+                      class="evidence-citation"
+                      @mouseenter="showEvidencePreview(reference.evidence_id)"
+                      @mouseleave="hideEvidencePreview"
+                      @focusin="showEvidencePreview(reference.evidence_id)"
+                      @focusout="hideEvidencePreview"
+                    >
+                      <button type="button" @click="inspectNormalized(reference.evidence_id)">▧ {{ reference.filename }}</button>
+                      <aside v-if="hoveredEvidenceId === reference.evidence_id" role="tooltip" class="evidence-tooltip">
+                        <strong>{{ reference.filename }}</strong>
+                        <small>{{ reference.document_type }} · 标准化内容预览</small>
+                        <p v-if="hoverPreview">{{ hoverPreview.text_preview || '该文件没有可预览正文。' }}</p>
+                        <p v-else>{{ hoverPreviewError || '正在加载预览…' }}</p>
+                      </aside>
+                    </span>
+                  </div>
+                </div>
+              </article>
+              <div class="all-evidence-links">
+                <span>本轮关联文件</span>
+                <span
+                  v-for="reference in customsAnalysis.evidence_refs"
+                  :key="reference.evidence_id"
+                  class="evidence-citation"
+                  @mouseenter="showEvidencePreview(reference.evidence_id)"
+                  @mouseleave="hideEvidencePreview"
+                  @focusin="showEvidencePreview(reference.evidence_id)"
+                  @focusout="hideEvidencePreview"
+                >
+                  <button type="button" @click="inspectNormalized(reference.evidence_id)">{{ reference.filename }}</button>
+                  <aside v-if="hoveredEvidenceId === reference.evidence_id" role="tooltip" class="evidence-tooltip">
+                    <strong>{{ reference.filename }}</strong>
+                    <small>{{ reference.document_type }} · 标准化内容预览</small>
+                    <p v-if="hoverPreview">{{ hoverPreview.text_preview || '该文件没有可预览正文。' }}</p>
+                    <p v-else>{{ hoverPreviewError || '正在加载预览…' }}</p>
+                  </aside>
+                </span>
+              </div>
+            </div>
           </template>
           <p v-if="workflow.state.result" class="result">{{ workflow.state.result }}</p>
         </article>

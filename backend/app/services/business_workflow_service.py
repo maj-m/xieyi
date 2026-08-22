@@ -166,6 +166,14 @@ class BusinessWorkflowService:
             await self._expire_if_needed(run)
         return await self._to_response(thread_id, snapshot, run)
 
+    async def find_run_by_idempotency(
+        self, case_id: uuid.UUID, idempotency_key: str
+    ) -> WorkflowRunResponse:
+        run = await self.workflow_repository.get_run_by_idempotency(case_id, idempotency_key)
+        if run is None:
+            raise NotFoundError("WORKFLOW_RUN_NOT_FOUND", "Workflow business run not found")
+        return WorkflowRunResponse.model_validate(run)
+
     async def resume(self, thread_id: uuid.UUID, data: WorkflowResume) -> WorkflowResponse:
         config = self._config(thread_id)
         snapshot = await self.graph.aget_state(config)
@@ -444,6 +452,12 @@ class BusinessWorkflowService:
         if isinstance(payload.get("customs_analysis"), dict):
             artifact_type = "CUSTOMS_RISK_ANALYSIS"
             content = cast(dict[str, object], payload["customs_analysis"])
+        elif isinstance(payload.get("evidence_elements"), dict):
+            artifact_type = "EVIDENCE_ELEMENTS"
+            content = cast(dict[str, object], payload["evidence_elements"])
+        elif isinstance(payload.get("risk_assessment"), dict):
+            artifact_type = "CUSTOMS_RISK_ASSESSMENT"
+            content = cast(dict[str, object], payload["risk_assessment"])
         elif isinstance(payload.get("summary"), str):
             artifact_type = "CASE_SUMMARY"
             content = {

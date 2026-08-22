@@ -30,6 +30,12 @@ async def test_workflow_persists_timeline_reviews_artifacts_and_idempotency(
     thread_id = started.json()["thread_id"]
     assert started.json()["run"]["status"] == "WAITING_REVIEW"
 
+    discovered = await api_client.get(
+        f"/api/v1/cases/{case_id}/workflows/by-idempotency/{start_payload['idempotency_key']}"
+    )
+    assert discovered.status_code == 200, discovered.text
+    assert discovered.json()["thread_id"] == thread_id
+
     duplicate_start = await api_client.post(
         f"/api/v1/cases/{case_id}/workflows", json=start_payload
     )

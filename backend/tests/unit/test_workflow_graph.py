@@ -1,10 +1,12 @@
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from app.agents import customs as customs_agents
 from app.graph.state import CaseState
 from app.graph.workflow import build_case_workflow
 
@@ -168,6 +170,8 @@ async def test_customs_graph_analyzes_normalized_evidence_before_review() -> Non
     interrupted = await graph.aget_state(config)
 
     assert interrupted.next == ("human_review",)
+    assert interrupted.values["evidence_elements"]["agent_name"] == "evidence_element_extractor"
+    assert interrupted.values["risk_assessment"]["agent_name"] == "evidence_relation_risk_analyst"
     assert interrupted.values["customs_analysis"]["risk_level"] == "HIGH"
     assert interrupted.values["customs_analysis"]["difference_usd"] == 37000.0
     assert "HIGH" in interrupted.values["summary"]
@@ -186,3 +190,56 @@ async def test_customs_graph_never_uses_evidence_interrupt_before_first_review()
     assert interrupted.values["status"] == "WAITING_REVIEW"
     assert interrupted.next == ("human_review",)
     assert interrupted.interrupts[0].value["type"] == "CASE_ANALYSIS_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_customs_graph_orchestrates_three_llm_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = SimpleNamespace(
+        llm_enabled=True,
+        llm_fallback_to_rules=False,
+        llm_max_input_characters=120_000,
+    )
+    calls: list[str] = []
+
+    async def fake_call_agent(
+        *, name: str, prompt: str, payload: dict[str, object]
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        del prompt, payload
+        calls.append(name)
+        values: dict[str, dict[str, object]] = {
+            "evidence_element_extractor": {
+                "declaration_numbers": ["CUS-1"],
+                "amounts": [{"value": 68000, "evidence_ids": ["email-1"]}],
+                "facts": [{"fact": "actual total 105000", "evidence_ids": ["email-1"]}],
+            },
+            "evidence_relation_risk_analyst": {
+                "risk_level": "HIGH",
+                "declared_amount_usd": 68000,
+                "actual_amount_usd": 105000,
+                "findings": [
+                    {"finding": "under-declaration", "evidence_ids": ["email-1"]}
+                ],
+            },
+            "case_conclusion_synthesizer": {
+                "summary": "HIGH risk; difference USD 37,000.",
+                "conflicts": [],
+                "confidence": 0.95,
+            },
+        }
+        return values[name], {"agent_name": name, "model": "test-model"}
+
+    monkeypatch.setattr(customs_agents, "get_settings", lambda: settings)
+    monkeypatch.setattr(customs_agents, "_call_agent", fake_call_agent)
+    graph = build_case_workflow(InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    await graph.ainvoke(customs_state(), config=config, durability="sync")
+    interrupted = await graph.aget_state(config)
+
+    assert calls == [
+        "evidence_element_extractor",
+        "evidence_relation_risk_analyst",
+        "case_conclusion_synthesizer",
+    ]
+    assert interrupted.values["customs_analysis"]["analysis_method"] == "MULTI_AGENT_LLM"
+    assert interrupted.values["summary"] == "HIGH risk; difference USD 37,000."
